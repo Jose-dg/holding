@@ -1,0 +1,67 @@
+[
+  {
+    "doctype": "DocType",
+    "name": "Alegra Settings",
+    "module": "workflows",
+    "custom": 1,
+    "fields": [
+      {
+        "fieldname": "company",
+        "fieldtype": "Link",
+        "label": "Company",
+        "options": "Company",
+        "reqd": 1
+      },
+      {
+        "fieldname": "alegra_user",
+        "fieldtype": "Data",
+        "label": "Alegra User",
+        "reqd": 1
+      },
+      {
+        "fieldname": "alegra_token",
+        "fieldtype": "Password",
+        "label": "Alegra Token",
+        "reqd": 1
+      }
+    ],
+    "permissions": [
+      {
+        "role": "System Manager",
+        "read": 1,
+        "write": 1,
+        "create": 1
+      }
+    ]
+  },
+  {
+    "doctype": "DocType",
+    "name": "Shopify Settings",
+    "module": "workflows",
+    "custom": 1,
+    "fields": [
+      {
+        "fieldname": "company",
+        "fieldtype": "Link",
+        "label": "Company",
+        "options": "Company",
+        "reqd": 1
+      },
+      {
+        "fieldname": "webhook_secret",
+        "fieldtype": "Password",
+        "label": "Webhook Secret",
+        "reqd": 1
+      }
+    ],
+    "permissions": [
+      {
+        "role": "System Manager",
+        "read": 1,
+        "write": 1,
+        "create": 1
+      }
+    ]
+  }
+]
+  

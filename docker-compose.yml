@@ -1,0 +1,250 @@
+x-env: &default-env
+  FRAPPE_SITE_NAME: ${SITE_NAME}
+  DB_HOST: ${DB_HOST}
+  DB_PORT: ${DB_PORT}
+  REDIS_CACHE: ${REDIS_CACHE}
+  REDIS_QUEUE: ${REDIS_QUEUE}
+  SOCKETIO_PORT: ${SOCKETIO_PORT}
+  MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+
+x-volumes: &default-vols
+  - sites:/home/frappe/frappe-bench/sites
+  - logs:/home/frappe/frappe-bench/logs
+
+services:
+  db:
+    image: mariadb:${MARIADB_VERSION:-10.6}
+    command: >
+      mysqld 
+      --character-set-server=${MYSQL_CHARSET:-utf8mb4}
+      --collation-server=${MYSQL_COLLATION:-utf8mb4_unicode_ci}
+      --max-connections=${MYSQL_MAX_CONNECTIONS:-151}
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MARIADB_ROOT_PASSWORD}", "--silent"]
+      interval: ${HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${HEALTHCHECK_RETRIES:-10}
+    restart: unless-stopped
+
+  redis-cache:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    command: 
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - ${REDIS_CACHE_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - ${REDIS_CACHE_EVICTION:-allkeys-lru}
+    restart: unless-stopped
+
+  redis-queue:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    volumes:
+      - redis-queue-data:/data
+    restart: unless-stopped
+
+  backend:
+    image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+    user: "${FRAPPE_USER_UID:-1000}:${FRAPPE_USER_GID:-1000}"
+    environment: *default-env
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    volumes: *default-vols
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"Host: ${SITE_NAME}\" -qO- http://localhost:${BACKEND_PORT:-8000}/api/method/ping || exit 1"]
+      interval: ${HEALTHCHECK_INTERVAL:-15s}
+      timeout: ${HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${HEALTHCHECK_RETRIES:-10}
+    restart: unless-stopped
+
+  websocket:
+    image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+    user: "${FRAPPE_USER_UID:-1000}:${FRAPPE_USER_GID:-1000}"
+    environment:
+      FRAPPE_REDIS_CACHE: ${REDIS_CACHE}
+      FRAPPE_REDIS_QUEUE: ${REDIS_QUEUE}
+      SOCKETIO_PORT: ${SOCKETIO_PORT}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    volumes: *default-vols
+    restart: unless-stopped
+
+  queue-short:
+    image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+    user: "${FRAPPE_USER_UID:-1000}:${FRAPPE_USER_GID:-1000}"
+    environment: *default-env
+    command: >
+      bash -lc "bench worker --queue short"
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    volumes: *default-vols
+    restart: unless-stopped
+
+  queue-long:
+    image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+    user: "${FRAPPE_USER_UID:-1000}:${FRAPPE_USER_GID:-1000}"
+    environment: *default-env
+    command: >
+      bash -lc "bench worker --queue long"
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    volumes: *default-vols
+    restart: unless-stopped
+
+  scheduler:
+    image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+    user: "${FRAPPE_USER_UID:-1000}:${FRAPPE_USER_GID:-1000}"
+    environment: *default-env
+    command: >
+      bash -lc "bench schedule"
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    volumes: *default-vols
+    restart: unless-stopped
+
+  frontend:
+    image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+    command: nginx-entrypoint.sh
+    environment:
+      BACKEND: backend:${BACKEND_PORT:-8000}
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME}
+      SOCKETIO: websocket:${SOCKETIO_PORT}
+      UPSTREAM_REAL_IP_ADDRESS: ${UPSTREAM_REAL_IP_ADDRESS:-127.0.0.1}
+      UPSTREAM_REAL_IP_HEADER: ${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}
+      UPSTREAM_REAL_IP_RECURSIVE: ${UPSTREAM_REAL_IP_RECURSIVE:-off}
+      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-120}
+      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-50m}
+    depends_on:
+      backend:
+        condition: service_healthy
+      websocket:
+        condition: service_started
+    ports:
+      - "${FRONTEND_PORT:-8081}:8080"
+    volumes: *default-vols
+    restart: unless-stopped
+
+  setup:
+    image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+    user: "${FRAPPE_USER_UID:-1000}:${FRAPPE_USER_GID:-1000}"
+    environment:
+      <<: *default-env
+      SITE_NAME: ${SITE_NAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      INSTALL_APPS: ${INSTALL_APPS:-erpnext,workflows}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_started
+      redis-queue:
+        condition: service_started
+    entrypoint: ["/bin/bash"]
+    command:
+      - -lc
+      - |
+        set -euo pipefail
+        cd /home/frappe/frappe-bench
+        
+        # Idempotente: si el site existe, solo migra y build
+        if [ ! -f sites/${SITE_NAME}/site_config.json ]; then
+          echo "🆕 Creando nuevo sitio: ${SITE_NAME}"
+          bench set-config -g db_host ${DB_HOST}
+          bench set-config -g redis_cache ${REDIS_CACHE}
+          bench set-config -g redis_queue ${REDIS_QUEUE}
+          bench set-config -g socketio_port ${SOCKETIO_PORT}
+          
+          bench new-site ${SITE_NAME} \
+            --admin-password ${ADMIN_PASSWORD} \
+            --db-root-password ${MARIADB_ROOT_PASSWORD} \
+            --mariadb-user-host-login-scope='%'
+          
+          # Instalar apps desde variable de entorno
+          IFS=',' read -ra APPS <<< "${INSTALL_APPS}"
+          for app in "$${APPS[@]}"; do
+            app="$(echo "$$app" | xargs)"  # trim whitespace
+            if [ -n "$$app" ] && [ "$$app" != "workflows" ]; then
+              echo "📦 Instalando app: $$app"
+              bench --site ${SITE_NAME} install-app "$$app"
+            fi
+          done
+        else
+          echo "✅ Sitio existente: ${SITE_NAME}"
+        fi
+        
+        # Instalar workflows (custom app)
+        echo "🔧 Instalando workflows..."
+        bench pip install -e apps/workflows
+        
+        # Actualizar apps.txt
+        python - <<'PY'
+        from pathlib import Path
+        
+        apps_txt = Path("sites/apps.txt")
+        lines = [line.strip() for line in apps_txt.read_text().splitlines() if line.strip()]
+        if "workflows" not in lines:
+            lines.append("workflows")
+        apps_txt.write_text("\n".join(lines) + "\n")
+        
+        apps_json = Path("sites/apps.json")
+        if apps_json.exists():
+            import json
+            data = json.loads(apps_json.read_text())
+            data.setdefault(
+                "workflows",
+                {
+                    "resolution": {"commit_hash": None, "branch": None},
+                    "required": [],
+                    "version": "0.1.0",
+                },
+            )
+            apps_json.write_text(json.dumps(data, indent=4) + "\n")
+        PY
+        
+        if ! bench --site ${SITE_NAME} list-apps | grep -Fqx workflows; then
+          echo "📦 Instalando workflows en sitio..."
+          bench --site ${SITE_NAME} install-app workflows
+        fi
+
+        # Asegurar default_site y current_site
+        bench set-config -g default_site ${SITE_NAME}
+        echo "${SITE_NAME}" > sites/current_site.txt
+        
+        echo "🔄 Migrando base de datos..."
+        bench --site ${SITE_NAME} migrate
+        
+        echo "🏗️  Building assets..."
+        bench build
+        
+        echo "🧹 Limpiando cache..."
+        bench --site ${SITE_NAME} clear-cache
+        
+        echo "✅ Setup completado!"
+    volumes: *default-vols
+
+volumes:
+  sites:
+  logs:
+  db-data:
+  redis-queue-data:
+
+  

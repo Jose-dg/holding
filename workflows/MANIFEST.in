@@ -1,0 +1,2 @@
+recursive-include workflows *.py
+recursive-include workflows/workflows/fixtures *.json
