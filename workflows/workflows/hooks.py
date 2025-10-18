@@ -13,17 +13,20 @@ fixtures = ["alegra_shopify_settings.json"]
 # Eventos de DocType
 doc_events = {
     "Sales Invoice": {
-        "on_submit": "workflows.workflows.events.intercompany.on_submit_sales_invoice",
+        "on_submit": "workflows.workflows.events.stock.check_replenishment_on_stock_update",
     },
-    "Serial No": {
-        "on_update_after_submit": "workflows.workflows.events.fulfillment.try_pending",
+    "POS Invoice": {
+        "on_submit": "workflows.workflows.events.stock.check_replenishment_on_stock_update",
     },
-    "Stock Entry": {
-        "on_update_after_submit": "workflows.workflows.events.fulfillment.try_pending",
+    "Sales Order": {
+        "on_submit": "workflows.workflows.events.procurement.create_material_request_for_so",
     },
 }
 
 # Endpoint público para Shopify (ruta REST)
 website_route_rules = [
-    {"from_route": "/api/workflows/shopify/order", "to_route": "workflows.api.shopify.handle_shopify_order"}
+    {
+        "from_route": "/api/workflows/shopify/order",
+        "to_route": "workflows.workflows.api.shopify.handle_shopify_order",
+    }
 ]

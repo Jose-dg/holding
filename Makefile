@@ -4,7 +4,7 @@ SHELL := /bin/bash
 
 IMAGE ?= $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
-.PHONY: init up down logs setup migrate build shell backup restore lint test push-image
+.PHONY: init up down logs restart setup migrate build shell backup restore lint test push-image
 
 init:
 	cp -n .env.example .env || true
@@ -21,6 +21,9 @@ down:
 
 logs:
 	docker compose logs -f --tail=200
+
+restart:
+	docker compose restart backend queue-short queue-long
 
 setup:
 	docker compose run --rm setup
